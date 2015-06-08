@@ -14,7 +14,7 @@ from dateutil.relativedelta import relativedelta
 
 import openerp
 from openerp.osv import orm, fields
-from openerp import netsvc, models, api
+from openerp import netsvc, models, api, exceptions
 from openerp.tools import DEFAULT_SERVER_DATE_FORMAT as DF
 from openerp.tools.translate import _
 import openerp.addons.decimal_precision as dp
