@@ -13,8 +13,8 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
 import openerp
-from openerp.osv import orm, fields
-from openerp import netsvc, models, api, exceptions
+from openerp.osv import orm
+from openerp import api, exceptions, fields, models, netsvc
 from openerp.tools import DEFAULT_SERVER_DATE_FORMAT as DF
 from openerp.tools.translate import _
 import openerp.addons.decimal_precision as dp
@@ -60,7 +60,7 @@ class recurring_contract_line(models.Model):
             self.amount = self.product_id.list_price
 
 
-class recurring_contract(orm.Model):
+class recurring_contract(models.Model):
     """ A contract to perform recurring invoicing to a partner """
 
     _name = "recurring.contract"
@@ -68,113 +68,105 @@ class recurring_contract(orm.Model):
     _inherit = ['mail.thread']
     _rec_name = 'reference'
 
-    def _get_total_amount(self, cr, uid, ids, name, args, context=None):
-        total = dict()
-        for contract in self.browse(cr, uid, ids, context):
-            total[contract.id] = sum([line.subtotal
-                                      for line in contract.contract_line_ids])
-        return total
+    @api.one
+    def _get_total_amount(self):
+        self.total_amount = sum([line.subtotal for line in
+                                 self.contract_line_ids])
 
-    def _get_last_paid_invoice(self, cr, uid, ids, name, args, context=None):
-        res = dict()
-        for contract in self.browse(cr, uid, ids, context):
-            res[contract.id] = max([invl.invoice_id.date_invoice
-                                    for invl in contract.invoice_line_ids
-                                    if invl.state == 'paid'] or [False])
-        return res
+    # def _get_contract_from_group(group_obj, cr, uid, group_ids, context=None):
+        # self = group_obj.pool.get('recurring.contract')
+        # return self.search(cr, uid, [('group_id', 'in', group_ids)],
+                           # context=context)
 
-    def _get_contract_from_group(group_obj, cr, uid, group_ids, context=None):
-        self = group_obj.pool.get('recurring.contract')
-        return self.search(cr, uid, [('group_id', 'in', group_ids)],
-                           context=context)
+    # def _get_contract_from_line(self, cr, uid, ids, context=None):
+        # contract_ids = []
+        # contract_line_obj = self.pool.get('recurring.contract.line')
+        # for contract_line in contract_line_obj.browse(cr, uid, ids, context):
+            # contract_ids.append(contract_line.contract_id.id)
+        # return contract_ids
+    @api.one
+    def _get_last_paid_invoice(self):
+        self.last_paid_invoice_date = max(
+            [invl.invoice_id.date_invoice for invl in self.invoice_line_ids
+             if invl.state == 'paid'] or [False])
 
-    def _get_contract_from_line(self, cr, uid, ids, context=None):
-        contract_ids = []
-        contract_line_obj = self.pool.get('recurring.contract.line')
-        for contract_line in contract_line_obj.browse(cr, uid, ids, context):
-            contract_ids.append(contract_line.contract_id.id)
-        return contract_ids
+    reference = fields.Char(
+        _('Reference'), default="/", required=True, readonly=True,
+        states={'draft': [('readonly', False)]})
+    start_date = fields.Date(
+        _('Start date'), default=datetime.today().strftime(DF),
+        required=True, readonly=True,
+        states={'draft': [('readonly', False)]},
+        track_visibility="onchange")
+    end_date = fields.Date(
+        _('End date'), readonly=False,
+        states={'terminated': [('readonly', True)]},
+        track_visibility="onchange")
+    next_invoice_date = fields.Date(
+        _('Next invoice date'), readonly=False,
+        states={'draft': [('readonly', False)]},
+        track_visibility="onchange")
+    last_paid_invoice_date = fields.Date(
+        compute='_get_last_paid_invoice', string=_('Last paid invoice date'))
+    partner_id = fields.Many2one(
+        'res.partner', string=_('Partner'), required=True,
+        readonly=True, states={'draft': [('readonly', False)]},
+        ondelete='restrict')
+    group_id = fields.Many2one(
+        'recurring.contract.group', _('Payment Options'),
+        required=True, ondelete='cascade',
+        track_visibility="onchange")
+    invoice_line_ids = fields.One2many(
+        'account.invoice.line', 'contract_id',
+        _('Related invoice lines'), readonly=True)
+    contract_line_ids = fields.One2many(
+        'recurring.contract.line', 'contract_id',
+        _('Contract lines'), track_visibility="onchange")
+    state = fields.Selection([
+        ('draft', _('Draft')),
+        ('active', _('Active')),
+        ('terminated', _('Terminated'))], _('Status'), default='draft',
+        select=True, readonly=True, track_visibility='onchange',
+        help=_(" * The 'Draft' status is used when a user is encoding a "
+               "new and unconfirmed Contract.\n"
+               "* The 'Active' status is used when the contract is "
+               "confirmed and until it's terminated.\n"
+               "* The 'Terminated' status is used when a contract is no "
+               "longer active."))
+    # 'total_amount': fields.function(
+            # _get_total_amount, string='Total',
+            # digits_compute=dp.get_precision('Account'),
+            # store={
+                # 'recurring.contract': (lambda self, cr, uid, ids, c=dict():
+                                       # ids, ['contract_line_ids'], 40),
+                # 'recurring.contract.line': (_get_contract_from_line,
+                                            # ['amount', 'quantity'], 30),
+            # }, track_visibility="onchange"),
+    total_amount = fields.Float(
+        compute='_get_total_amount', string='Total',
+        digits_compute=dp.get_precision('Account'),
+        track_visibility="onchange")
+            # 'payment_term_id': fields.related(
+            # 'group_id', 'payment_term_id', relation='account.payment.term',
+            # type="many2one", readonly=True, string=_('Payment Term'),
+            # store={
+                # 'recurring.contract.group': (
+                    # _get_contract_from_group,
+                    # ['payment_term_id'], 10)}),
+    payment_term_id = fields.Many2one(
+        'account.payment.term', readonly=True, string=_('Payment Term'),
+        store=True)
 
-    _columns = {
-        'reference': fields.char(
-            _('Reference'), required=True, readonly=True,
-            states={'draft': [('readonly', False)]}),
-        'start_date': fields.date(
-            _('Start date'), required=True, readonly=True,
-            states={'draft': [('readonly', False)]},
-            track_visibility="onchange"),
-        'end_date': fields.date(
-            _('End date'), readonly=False,
-            states={'terminated': [('readonly', True)]},
-            track_visibility="onchange"),
-        'next_invoice_date': fields.date(
-            _('Next invoice date'), readonly=False,
-            states={'draft': [('readonly', False)]},
-            track_visibility="onchange"),
-        'last_paid_invoice_date': fields.function(
-            _get_last_paid_invoice, type='date',
-            string=_('Last paid invoice date')),
-        'partner_id': fields.many2one(
-            'res.partner', string=_('Partner'), required=True,
-            readonly=True, states={'draft': [('readonly', False)]},
-            ondelete='restrict'),
-        'group_id': fields.many2one(
-            'recurring.contract.group', _('Payment Options'),
-            required=True, ondelete='cascade',
-            track_visibility="onchange"),
-        'invoice_line_ids': fields.one2many(
-            'account.invoice.line', 'contract_id',
-            _('Related invoice lines'), readonly=True),
-        'contract_line_ids': fields.one2many(
-            'recurring.contract.line', 'contract_id',
-            _('Contract lines'), track_visibility="onchange"),
-        'state': fields.selection([
-            ('draft', _('Draft')),
-            ('active', _('Active')),
-            ('terminated', _('Terminated'))], _('Status'), select=True,
-            readonly=True, track_visibility='onchange',
-            help=_(" * The 'Draft' status is used when a user is encoding a "
-                   "new and unconfirmed Contract.\n"
-                   "* The 'Active' status is used when the contract is "
-                   "confirmed and until it's terminated.\n"
-                   "* The 'Terminated' status is used when a contract is no "
-                   "longer active.")),
-        'total_amount': fields.function(
-            _get_total_amount, string='Total',
-            digits_compute=dp.get_precision('Account'),
-            store={
-                'recurring.contract': (lambda self, cr, uid, ids, c=dict():
-                                       ids, ['contract_line_ids'], 40),
-                'recurring.contract.line': (_get_contract_from_line,
-                                            ['amount', 'quantity'], 30),
-            }, track_visibility="onchange"),
-        'payment_term_id': fields.related(
-            'group_id', 'payment_term_id', relation='account.payment.term',
-            type="many2one", readonly=True, string=_('Payment Term'),
-            store={
-                'recurring.contract.group': (
-                    _get_contract_from_group,
-                    ['payment_term_id'], 10)}),
-    }
-
-    _defaults = {
-        'reference': '/',
-        'state': 'draft',
-        'start_date': datetime.today().strftime(DF),
-    }
-
-    def _check_unique_reference(self, cr, uid, ids, context=None):
-        sr_ids = self.search(cr, 1, [], context=context)
-        lst = [contract.reference
-               for contract in self.browse(cr, uid, sr_ids, context=context)
-               if contract.reference and contract.id not in ids]
-        for self_contract in self.browse(cr, uid, ids, context=context):
-            if self_contract.reference and self_contract.reference in lst:
-                return False
+    @api.constrains('reference')
+    @api.one
+    def _check_unique_reference(self):
+        chk_list_contracts = self.search([]) - self
+        ref_lst = [contract.reference for contract in chk_list_contracts
+                   if contract.reference]
+        if self.reference in ref_lst:
+            raise exceptions.ValidationError(
+                _('Error: Reference should be unique'))
         return True
-
-    _constraints = [(_check_unique_reference,
-                     _('Error: Reference should be unique'), ['reference'])]
 
     #################################
     #        PUBLIC METHODS         #
