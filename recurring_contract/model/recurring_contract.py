@@ -12,65 +12,52 @@
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
+import openerp
 from openerp.osv import orm, fields
-from openerp import netsvc
+from openerp import netsvc, models, api
 from openerp.tools import DEFAULT_SERVER_DATE_FORMAT as DF
 from openerp.tools.translate import _
 import openerp.addons.decimal_precision as dp
 
 
-class recurring_contract_line(orm.Model):
+class recurring_contract_line(models.Model):
     """ Each product sold through a contract """
 
     _name = "recurring.contract.line"
     _description = "A contract line"
 
-    def name_get(self, cr, uid, ids, context=None):
+    def name_get(self, ids):
         if not ids:
             return []
-        res = [(cl.id, cl.product_id.name_template) for cl in self.browse(
-               cr, uid, ids, context)]
+        res = [(cl.id, cl.product_id.name_template) for cl in self.browse(ids)]
         return res
 
-    def _compute_subtotal(self, cr, uid, ids, field_name, arg, context):
-        res = dict()
-        for line in self.browse(cr, uid, ids, context=context):
-            price = line.amount * line.quantity
-            res[line.id] = price
-        return res
+    contract_id = openerp.fields.Many2one(
+        'recurring.contract', _('Contract'), required=True,
+        ondelete='cascade', readonly=True)
+    product_id = openerp.fields.Many2one('product.product', _('Product'),
+                                         required=True)
+    amount = openerp.fields.Float(_('Price'), required=True)
+    quantity = openerp.fields.Integer(_('Quantity'), default=1, required=True)
+    # 'subtotal': fields.function(
+            # _compute_subtotal, string='Subtotal', type="float",
+            # digits_compute=dp.get_precision('Account'), store={
+                # 'recurring.contract.line': (
+                    # lambda self, cr, uid, ids, c=None: ids,
+                    # ['amount', 'quantity'], 10)
+            # }),
+    subtotal = openerp.fields.Float(compute='_compute_subtotal')
 
-    _columns = {
-        'contract_id': fields.many2one(
-            'recurring.contract', _('Contract'), required=True,
-            ondelete='cascade', readonly=True),
-        'product_id': fields.many2one(
-            'product.product', _('Product'), required=True),
-        'amount': fields.float(_('Price'), required=True),
-        'quantity': fields.integer(_('Quantity'), required=True),
-        'subtotal': fields.function(
-            _compute_subtotal, string='Subtotal', type="float",
-            digits_compute=dp.get_precision('Account'), store={
-                'recurring.contract.line': (
-                    lambda self, cr, uid, ids, c=None: ids,
-                    ['amount', 'quantity'], 10)
-            }),
-    }
+    @api.one
+    def _compute_subtotal(self):
+        self.subtotal = self.amount * self.quantity
 
-    _defaults = {
-        'quantity': 1,
-    }
-
-    def on_change_product_id(self, cr, uid, ids, product_id, context=None):
-        if not context:
-            context = dict()
-
-        if not product_id:
-            return {'value': {'amount': 0.0}}
-
-        prod = self.pool.get('product.product').browse(cr, uid, product_id,
-                                                       context)
-        value = {'amount': prod.list_price or 0.0}
-        return {'value': value}
+    @api.onchange('product_id')
+    def on_change_product_id(self):
+        if not self.product_id:
+            self.amount = 0.0
+        else:
+            self.amount = self.product_id.list_price
 
 
 class recurring_contract(orm.Model):

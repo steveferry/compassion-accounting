@@ -12,6 +12,7 @@
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
+import openerp
 from openerp.osv import orm, fields
 from openerp.tools import DEFAULT_SERVER_DATE_FORMAT as DF
 from openerp.tools.translate import _
@@ -64,6 +65,10 @@ class contract_group(orm.Model):
             group_ids.add(contract.group_id.id)
         return list(group_ids)
 
+    partner_id = openerp.fields.Many2one(
+        'res.partner', _('Partner'), required=True,
+        ondelete='cascade', track_visibility="onchange")
+
     _columns = {
         # TODO sequence for name/ref ?
         'ref': fields.char(_('Reference')),
@@ -74,9 +79,6 @@ class contract_group(orm.Model):
             ('year', _('Year(s)'))], _('Reccurency'), required=True),
         'recurring_value': fields.integer(
             _('Generate every'), required=True),
-        'partner_id': fields.many2one(
-            'res.partner', _('Partner'), required=True,
-            ondelete='cascade', track_visibility="onchange"),
         'contract_ids': fields.one2many(
             'recurring.contract', 'group_id', _('Contracts'),
             readonly=True),
