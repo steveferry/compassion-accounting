@@ -217,7 +217,7 @@ class recurring_contract(models.Model):
     def unlink(self):
         if self.state not in ('draft', 'terminated'):
             raise exceptions.Warning(
-                'UserError', 
+                'UserError',
                 _('You cannot delete a contract that is still active. '
                   'Terminate it first.'))
         else:
@@ -231,7 +231,6 @@ class recurring_contract(models.Model):
         contract_group_obj = self.pool.get('recurring.contract.group')
         return contract_group_obj.button_generate_invoices(
             cr, uid, group_ids, context)
-
 
     def clean_invoices(self, cr, uid, ids, context=None, since_date=None,
                        to_date=None, keep_lines=None):
@@ -378,10 +377,9 @@ class recurring_contract(models.Model):
                 self.group_id.payment_term_id.id or False})
             old_lines_ids = [invl.id for invl in invoice.invoice_line
                              if invl.contract_id.id == self.id]
-            inv_line_obj.unlink(cr, uid, old_lines_ids)
-            context['no_next_date_update'] = True
-            group_obj._generate_invoice_lines(cr, uid, self,
-                                              invoice.id, context)
+            inv_line_obj.unlink(old_lines_ids)
+            self.env.context['no_next_date_update'] = True
+            group_obj._generate_invoice_lines(invoice.id)
             del(self.env.context['no_next_date_update'])
 
     @api.one
@@ -391,21 +389,20 @@ class recurring_contract(models.Model):
             next_invoice_date = datetime.strptime(self.next_invoice_date, DF)
             if next_invoice_date > new_invoice_date:
                 raise orm.except_orm(
-                        'Error',
-                        _('You cannot rewind the next invoice date.'))
+                    'Error', _('You cannot rewind the next invoice date.'))
         return True
 
     def _on_contract_lines_changed(self):
         """Update related invoices to reflect the changes to the contract.
         """
-        invoice_obj =  self.env['account.invoice']
+        invoice_obj = self.env['account.invoice']
         inv_line_obj = self.env['account.invoice.line']
         # Find all unpaid invoice lines after the given date
         since_date = datetime.today().replace(day=1).strftime(DF)
         inv_line_ids = inv_line_obj.search(
-                     [('contract_id', '=', self.id),
-                      ('due_date', '>=', since_date),
-                      ('state', 'not in', ('paid', 'cancel'))])
+            [('contract_id', '=', self.id),
+             ('due_date', '>=', since_date),
+             ('state', 'not in', ('paid', 'cancel'))])
         con_ids = set()
         inv_ids = set()
         for inv_line in inv_line_obj.browse(inv_line_ids):
@@ -423,35 +420,30 @@ class recurring_contract(models.Model):
             wf_service.trg_validate('account.invoice', invoice.id,
                                     'invoice_open')
 
-    def _move_cancel_lines(self, cr, uid, invoice_line_ids, context=None,
-                           message=None):
+    @api.one
+    def _move_cancel_lines(self, invoice_line_ids, message=None):
         """ Method that takes out given invoice_lines from their invoice
         and put them in a cancelled copy of that invoice.
         Warning : this method does not recompute totals of original invoices,
                   and does not update related move lines.
         """
-        invoice_obj = self.pool.get('account.invoice')
-        invoice_line_obj = self.pool.get('account.invoice.line')
+        invoice_obj = self.env['account.invoice']
+        invoice_line_obj = self.env['account.invoice.line']
         invoices_copy = dict()
-        for invoice_line in invoice_line_obj.browse(cr, uid, invoice_line_ids,
-                                                    context):
+        for invoice_line in invoice_line_obj.browse(invoice_line_ids):
             invoice = invoice_line.invoice_id
             copy_invoice_id = invoices_copy.get(invoice.id)
             if not copy_invoice_id:
-                invoice_obj.copy(cr, uid, invoice.id, {
-                    'date_invoice': invoice.date_invoice}, context)
+                invoice_obj.copy(invoice.id, {
+                    'date_invoice': invoice.date_invoice})
                 copy_invoice_id = invoice_obj.search(
-                    cr, uid, [
-                        ('partner_id', '=', invoice.partner_id.id),
-                        ('state', '=', 'draft'),
-                        ('id', '!=', invoice.id),
-                        ('date_invoice', '=', invoice.date_invoice)],
-                    context=context)[0]
+                    [('partner_id', '=', invoice.partner_id.id),
+                     ('state', '=', 'draft'), ('id', '!=', invoice.id),
+                     ('date_invoice', '=', invoice.date_invoice)])[0]
                 # Empty the new invoice
-                cancel_lines = invoice_line_obj.search(cr, uid, [
-                    ('invoice_id', '=', copy_invoice_id)],
-                    context=context)
-                invoice_line_obj.unlink(cr, uid, cancel_lines, context)
+                cancel_lines = invoice_line_obj.search([
+                    ('invoice_id', '=', copy_invoice_id)])
+                invoice_line_obj.unlink(cancel_lines)
                 invoices_copy[invoice.id] = copy_invoice_id
 
             # Move the line in the invoice copy
@@ -460,17 +452,16 @@ class recurring_contract(models.Model):
         # Compute and cancel invoice copies
         cancel_ids = invoices_copy.values()
         if cancel_ids:
-            invoice_obj.button_compute(cr, uid, cancel_ids,
-                                       context=context, set_total=True)
+            invoice_obj.button_compute(cancel_ids, set_total=True)
             wf_service = netsvc.LocalService('workflow')
             for cancel_id in cancel_ids:
                 wf_service.trg_validate(
-                    uid, 'account.invoice', cancel_id, 'invoice_cancel', cr)
+                    'account.invoice', cancel_id, 'invoice_cancel')
 
-                self.pool.get('mail.thread').message_post(
-                    cr, uid, cancel_id, message,
-                    _("Invoice Cancelled"), 'comment',
-                    context={'thread_model': 'account.invoice'})
+            self.pool.get('mail.thread').message_post(
+                message, _("Invoice Cancelled"), 'comment')
+
+            # self.env.context['thread_model']= 'account.invoice'
 
         return True
 
