@@ -337,18 +337,20 @@ class recurring_contract(models.Model):
     #################################
     #        PRIVATE METHODS        #
     #################################
-    def update_next_invoice_date(self, cr, uid, ids, context=None):
+
+    @api.multi
+    def update_next_invoice_date(self):
         """ Recompute and set next_invoice date. """
-        for contract in self.browse(cr, uid, ids, context):
-            next_date = self._compute_next_invoice_date(contract)
+        for contract in self:
+            next_date = contract._compute_next_invoice_date()
             contract.write({'next_invoice_date': next_date})
         return True
 
-    def _compute_next_invoice_date(self, contract):
+    def _compute_next_invoice_date(self):
         """ Compute next_invoice_date for a single contract. """
-        next_date = datetime.strptime(contract.next_invoice_date, DF)
-        rec_unit = contract.group_id.recurring_unit
-        rec_value = contract.group_id.recurring_value
+        next_date = datetime.strptime(self.next_invoice_date, DF)
+        rec_unit = self.group_id.recurring_unit
+        rec_value = self.group_id.recurring_value
         if rec_unit == 'day':
             next_date = next_date + relativedelta(days=+rec_value)
         elif rec_unit == 'week':
