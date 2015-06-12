@@ -29,7 +29,7 @@
 		<field name="name">recurring.contract.form</field>
 		<field name="model">recurring.contract</field>
 		<field name="arch" type="xml">
-			<form string="Contract" version="7.0">
+			<form string="Contract" version="8.0">
 			<header>
 				<field name="state" widget="statusbar" statusbar_visible="draft,active,terminated" />
 				<button name="contract_validated" class="oe_highlight" string="Validate" states="draft" />

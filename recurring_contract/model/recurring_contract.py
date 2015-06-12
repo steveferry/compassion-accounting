@@ -171,13 +171,14 @@ class recurring_contract(models.Model):
     #################################
     #        PUBLIC METHODS         #
     #################################
-    def create(self, cr, uid, vals, context=None):
+    @api.model
+    def create(self, vals):
         """ Add a sequence generated ref if none is given """
         if vals.get('reference', '/') == '/':
-            vals['reference'] = self.pool.get('ir.sequence').next_by_code(
-                cr, uid, 'recurring.contract.ref', context=context)
-        return super(recurring_contract, self).create(cr, uid, vals,
-                                                      context=context)
+            vals['reference'] = self.env['ir.sequence'].next_by_code(
+                'recurring.contract.ref')
+
+        return super(recurring_contract, self).create(vals)
 
     @api.one
     def write(self, vals):
@@ -195,7 +196,8 @@ class recurring_contract(models.Model):
 
         return res
 
-    def copy(self, cr, uid, id, default=None, context=None):
+    @api.one
+    def copy(self, default=None):
         default = default or dict()
         today = datetime.today()
         old_contract = self.browse(cr, uid, id, context)
@@ -210,8 +212,7 @@ class recurring_contract(models.Model):
             'next_invoice_date': next_invoice_date.strftime(DF),
             'invoice_line_ids': False,
         })
-        return super(recurring_contract, self).copy(cr, uid, id, default,
-                                                    context)
+        return super(recurring_contract, self).copy(default)
 
     @api.one
     def unlink(self):
@@ -233,8 +234,7 @@ class recurring_contract(models.Model):
             cr, uid, group_ids, context)
 
     @api.one
-    def clean_invoices(self, context=None, since_date=None,
-                       to_date=None, keep_lines=None):
+    def clean_invoices(self, since_date=None, to_date=None, keep_lines=None):
         """ This method deletes invoices lines generated for a given contract
             having a due date >= current month. If the invoice_line was the
             only line in the invoice, we cancel the invoice. In the other
@@ -302,12 +302,11 @@ class recurring_contract(models.Model):
             wf_service.trg_validate(self.env.user.id, 'account.invoice',
                                     invoice_id, 'invoice_open', self.env.cr)
 
-    def rewind_next_invoice_date(self, cr, uid, ids, context):
+    def rewind_next_invoice_date(self):
         """ Rewinds the next invoice date of contract after the last
         generated invoice. No open invoices exist after that date. """
-        gen_states = self.pool.get(
-            'recurring.contract.group')._get_gen_states()
-        for contract in self.browse(cr, uid, ids, context):
+        gen_states = self.env['recurring.contract.group']._get_gen_states()
+        for contract in self:
             if contract.state in gen_states:
                 last_invoice_date = max([
                     datetime.strptime(line.invoice_id.date_invoice, DF) for
@@ -316,9 +315,9 @@ class recurring_contract(models.Model):
                 if last_invoice_date:
                     # Call super for allowing rewind.
                     super(recurring_contract, self).write(
-                        cr, uid, [contract.id], {
+                        [contract.id], {
                             'next_invoice_date':
-                            last_invoice_date.strftime(DF)}, context)
+                            last_invoice_date.strftime(DF)})
                     contract.update_next_invoice_date()
                 else:
                     # No open/paid invoices, look for cancelled ones
@@ -338,12 +337,10 @@ class recurring_contract(models.Model):
     #        PRIVATE METHODS        #
     #################################
 
-    @api.multi
     def update_next_invoice_date(self):
         """ Recompute and set next_invoice date. """
-        for contract in self:
-            next_date = contract._compute_next_invoice_date()
-            contract.write({'next_invoice_date': next_date})
+        next_date = self._compute_next_invoice_date()
+        self.write({'next_invoice_date': next_date})
         return True
 
     def _compute_next_invoice_date(self):
@@ -503,19 +500,19 @@ class recurring_contract(models.Model):
         self.state = 'active'
         return True
 
-    def contract_terminated(self, cr, uid, ids, context=None):
+    @api.one
+    def contract_terminated(self):
         today = datetime.today().strftime(DF)
-        self.write(cr, uid, ids, {'state': 'terminated', 'end_date': today})
-        self.clean_invoices(cr, uid, ids, context)
+        self.write({'state': 'terminated', 'end_date': today})
+        self.clean_invoices()
         return True
 
-    def end_date_reached(self, cr, uid, context=None):
+    def end_date_reached(self):
         today = datetime.today().strftime(DF)
-        contract_ids = self.search(cr, uid, [('state', '=', 'active'),
-                                             ('end_date', '<=', today)],
-                                   context=context)
+        contract_ids = self.search([('state', '=', 'active'),
+                                    ('end_date', '<=', today)])
 
         if contract_ids:
-            self.contract_terminated(cr, uid, contract_ids, context=context)
+            contract_ids.contract_terminated()
 
         return True
