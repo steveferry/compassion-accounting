@@ -232,30 +232,30 @@ class recurring_contract(models.Model):
         return contract_group_obj.button_generate_invoices(
             cr, uid, group_ids, context)
 
-    def clean_invoices(self, cr, uid, ids, context=None, since_date=None,
+    @api.one
+    def clean_invoices(self, context=None, since_date=None,
                        to_date=None, keep_lines=None):
         """ This method deletes invoices lines generated for a given contract
             having a due date >= current month. If the invoice_line was the
             only line in the invoice, we cancel the invoice. In the other
             case, we have to revalidate the invoice to update the move lines.
         """
-        invl_search = [('contract_id', 'in', ids),
+        invl_search = [('contract_id', '=', self.id),
                        ('state', 'not in', ('paid', 'cancel'))]
         if since_date:
             invl_search.append(('due_date', '>=', since_date))
         if to_date:
             invl_search.append(('due_date', '<=', to_date))
-        inv_line_obj = self.pool.get('account.invoice.line')
+        inv_line_obj = self.env['account.invoice.line']
 
         # Find all unpaid invoice lines after the given date
-        inv_line_ids = inv_line_obj.search(cr, uid, invl_search,
-                                           context=context)
+        inv_line_ids = self.invoice_line_ids.filtered(
+            lambda record: record.state not in ('paid', 'cancel'))
 
         inv_ids = set()
         empty_inv_ids = set()
         to_remove_ids = []   # Invoice lines that will be moved or removed
-
-        for inv_line in inv_line_obj.browse(cr, uid, inv_line_ids, context):
+        for inv_line in inv_line_ids:
             invoice = inv_line.invoice_id
             inv_ids.add(invoice.id)
             # Check if invoice is empty after removing the invoice_lines
@@ -264,7 +264,7 @@ class recurring_contract(models.Model):
                 remaining_lines_ids = [
                     invl.id for invl in invoice.invoice_line if
                     not invl.contract_id or
-                    invl.contract_id and invl.contract_id.id not in ids]
+                    invl.contract_id and invl.contract_id.id != self.id]
                 if remaining_lines_ids:
                     # We can move or remove the line
                     to_remove_ids.append(inv_line.id)
@@ -273,32 +273,34 @@ class recurring_contract(models.Model):
                     empty_inv_ids.add(invoice.id)
 
         if keep_lines:
-            self._move_cancel_lines(cr, uid, to_remove_ids, context,
-                                    keep_lines)
+            self._move_cancel_lines(to_remove_ids, keep_lines)
         else:
-            inv_line_obj.unlink(cr, uid, to_remove_ids, context)
+            to_remove_recset = inv_line_obj.browse(to_remove_ids)
+            to_remove_recset.unlink()
 
         # Invoices to set back in open state
         renew_inv_ids = list(inv_ids - empty_inv_ids)
 
-        self._cancel_confirm_invoices(cr, uid, list(inv_ids), renew_inv_ids,
-                                      context, keep_lines)
+        self._cancel_confirm_invoices(list(inv_ids), renew_inv_ids,
+                                      keep_lines)
 
         return inv_ids
 
-    def _cancel_confirm_invoices(self, cr, uid, cancel_ids, confirm_ids,
-                                 context=None, keep_lines=None):
+    @api.one
+    def _cancel_confirm_invoices(self, cancel_ids, confirm_ids,
+                                 keep_lines=None):
         """ Cancels given invoices and validate again given invoices.
             confirm_ids must be a subset of cancel_ids ! """
         inv_obj = self.pool.get('account.invoice')
         wf_service = netsvc.LocalService('workflow')
         for invoice_id in cancel_ids:
-            wf_service.trg_validate(uid, 'account.invoice',
-                                    invoice_id, 'invoice_cancel', cr)
-        inv_obj.action_cancel_draft(cr, uid, confirm_ids)
+            wf_service.trg_validate(self.env.user.id, 'account.invoice',
+                                    invoice_id, 'invoice_cancel', self.env.cr)
+        inv_obj.action_cancel_draft(self.env.cr, self.env.user.id,
+                                    confirm_ids)
         for invoice_id in confirm_ids:
-            wf_service.trg_validate(uid, 'account.invoice',
-                                    invoice_id, 'invoice_open', cr)
+            wf_service.trg_validate(self.env.user.id, 'account.invoice',
+                                    invoice_id, 'invoice_open', self.env.cr)
 
     def rewind_next_invoice_date(self, cr, uid, ids, context):
         """ Rewinds the next invoice date of contract after the last
@@ -377,10 +379,10 @@ class recurring_contract(models.Model):
                 self.group_id.payment_term_id.id or False})
             old_lines_ids = [invl.id for invl in invoice.invoice_line
                              if invl.contract_id.id == self.id]
-            inv_line_obj.unlink(old_lines_ids)
-            self.env.context['no_next_date_update'] = True
-            group_obj._generate_invoice_lines(invoice.id)
-            del(self.env.context['no_next_date_update'])
+            inv_line_obj.browse(old_lines_ids).unlink()
+            self.with_context(no_next_date_update=True)
+            group_obj._generate_invoice_lines(self, invoice.id)
+            self.with_context(no_next_date_update=False)
 
     @api.one
     def _on_change_next_invoice_date(self, new_invoice_date):
@@ -403,22 +405,23 @@ class recurring_contract(models.Model):
             [('contract_id', '=', self.id),
              ('due_date', '>=', since_date),
              ('state', 'not in', ('paid', 'cancel'))])
+
         con_ids = set()
         inv_ids = set()
-        for inv_line in inv_line_obj.browse(inv_line_ids):
+        for inv_line in inv_line_ids:
             invoice = inv_line.invoice_id
             if invoice.id not in inv_ids or \
                     inv_line.contract_id.id not in con_ids:
                 con_ids.add(inv_line.contract_id.id)
                 inv_ids.add(invoice.id)
-                invoice_obj.action_cancel([invoice.id])
-                invoice_obj.action_cancel_draft([invoice.id])
+                invoice.action_cancel()
+                invoice.action_cancel_draft()
                 self._update_invoice_lines([invoice.id])
 
         wf_service = netsvc.LocalService('workflow')
         for invoice in invoice_obj.browse(list(inv_ids)):
-            wf_service.trg_validate('account.invoice', invoice.id,
-                                    'invoice_open')
+            wf_service.trg_validate(self.env.user.id, 'account.invoice',
+                                    invoice.id, 'invoice_open', self.env.cr)
 
     @api.one
     def _move_cancel_lines(self, invoice_line_ids, message=None):
@@ -456,12 +459,12 @@ class recurring_contract(models.Model):
             wf_service = netsvc.LocalService('workflow')
             for cancel_id in cancel_ids:
                 wf_service.trg_validate(
-                    'account.invoice', cancel_id, 'invoice_cancel')
+                    self.env.user.id, 'account.invoice', cancel_id,
+                    'invoice_cancel', self.env.cr)
 
+            self.env.with_context(thread_model='account.invoice')
             self.pool.get('mail.thread').message_post(
                 message, _("Invoice Cancelled"), 'comment')
-
-            # self.env.context['thread_model']= 'account.invoice'
 
         return True
 
