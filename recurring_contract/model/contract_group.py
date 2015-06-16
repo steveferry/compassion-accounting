@@ -69,6 +69,45 @@ class contract_group(orm.Model):
         'res.partner', _('Partner'), required=True,
         ondelete='cascade', track_visibility="onchange")
 
+    ref = openerp.fields.Char(_('Reference')),
+    recurring_unit = openerp.fields.Selection([
+        ('day', _('Day(s)')),
+        ('week', _('Week(s)')),
+        ('month', _('Month(s)')),
+        ('year', _('Year(s)'))], _('Reccurency'), required=True),
+    recurring_value = openerp.fields.Integer(
+        _('Generate every'), required=True)
+    contract_ids = openerp.fields.One2many(
+        'recurring.contract', 'group_id', _('Contracts'),
+        readonly=True)
+    # TODO Add unit for advance_billing
+    advance_billing_months = openerp.fields.Integer(
+        _('Advance billing months'),
+        help=_(
+            'Advance billing allows you to generate invoices in '
+            'advance. For example, you can generate the invoices '
+            'for each month of the year and send them to the '
+            'customer in january.'
+        ), ondelete='no action')
+    payment_term_id = openerp.fields.Many2one(
+        'account.payment.term', _('Payment Term'), track_visibility="onchange")
+
+    next_invoice_date = openerp.fields.Date(
+        compute='_get_next_invoice_date',
+        string=_('Next invoice date'),
+        store={
+            'recurring.contract': (
+                _get_groups_from_contract, ['next_invoice_date',
+                                            'state'], 20)
+        })
+
+    last_paid_invoice_date = openerp.fields.Date(
+        comptute='_get_last_paid_invoice',
+        string=_('Last paid invoice date'))
+
+    change_method = openerp.fields.Selection(
+        __get_change_methods, 'Change method')
+
     _columns = {
         # TODO sequence for name/ref ?
         'ref': fields.char(_('Reference')),
@@ -172,8 +211,7 @@ class contract_group(orm.Model):
 
         # Check if there is invoice waiting for validation
         if recurring_invoicer.invoice_ids:
-            self.pool.get('recurring.invoicer').validate_invoices(
-                cr, uid, [invoicer_id])
+            recurring_invoicer.validate_invoices()
 
     def clean_invoices(self, cr, uid, group, context=None):
         """ Change method which cancels generated invoices and rewinds

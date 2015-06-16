@@ -12,8 +12,6 @@
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
-import openerp
-from openerp.osv import orm
 from openerp import api, exceptions, fields, models, netsvc
 from openerp.tools import DEFAULT_SERVER_DATE_FORMAT as DF
 from openerp.tools.translate import _
@@ -32,13 +30,13 @@ class recurring_contract_line(models.Model):
         res = [(cl.id, cl.product_id.name_template) for cl in self.browse(ids)]
         return res
 
-    contract_id = openerp.fields.Many2one(
+    contract_id = fields.Many2one(
         'recurring.contract', _('Contract'), required=True,
         ondelete='cascade', readonly=True)
-    product_id = openerp.fields.Many2one('product.product', _('Product'),
-                                         required=True)
-    amount = openerp.fields.Float(_('Price'), required=True)
-    quantity = openerp.fields.Integer(_('Quantity'), default=1, required=True)
+    product_id = fields.Many2one('product.product', _('Product'),
+                                 required=True)
+    amount = fields.Float(_('Price'), required=True)
+    quantity = fields.Integer(_('Quantity'), default=1, required=True)
     # 'subtotal': fields.function(
             # _compute_subtotal, string='Subtotal', type="float",
             # digits_compute=dp.get_precision('Account'), store={
@@ -46,7 +44,7 @@ class recurring_contract_line(models.Model):
                     # lambda self, cr, uid, ids, c=None: ids,
                     # ['amount', 'quantity'], 10)
             # }),
-    subtotal = openerp.fields.Float(compute='_compute_subtotal')
+    subtotal = fields.Float(compute='_compute_subtotal')
 
     @api.one
     def _compute_subtotal(self):
@@ -389,7 +387,7 @@ class recurring_contract(models.Model):
         if self.next_invoice_date:
             next_invoice_date = datetime.strptime(self.next_invoice_date, DF)
             if next_invoice_date > new_invoice_date:
-                raise orm.except_orm(
+                raise exceptions.Warning(
                     'Error', _('You cannot rewind the next invoice date.'))
         return True
 
