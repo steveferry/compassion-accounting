@@ -9,58 +9,59 @@
 #
 ##############################################################################
 
-from openerp.osv import orm, fields
+from openerp import api, fields, models
 from openerp.tools.translate import _
 
 
-class account_invoice(orm.Model):
+class account_invoice(models.Model):
     _name = 'account.invoice'
     _inherit = 'account.invoice'
 
-    _columns = {
-        'recurring_invoicer_id': fields.many2one(
-            'recurring.invoicer', _('Invoicer')),
-    }
+    recurring_invoicer_id = fields.Many2one(
+        'recurring.invoicer', _('Invoicer'))
 
 
-class account_invoice_line(orm.Model):
+class account_invoice_line(models.Model):
     _name = 'account.invoice.line'
     _inherit = 'account.invoice.line'
 
-    def _get_dates(self, cr, uid, ids, name, args, context=None):
+    def _get_dates(self):
         res = {}
-        for line in self.browse(cr, uid, ids, context):
+        for line in self:
             res[line.id] = line.invoice_id.date_due or False
 
         return res
 
-    def _get_states(self, cr, uid, ids, name, args, context=None):
+    def _get_states(self):
         res = {}
-        for line in self.browse(cr, uid, ids, context):
+        for line in self:
             res[line.id] = line.invoice_id.state
 
         return res
 
-    def _get_invoice_lines(self, cr, uid, ids, context=None):
-        inv_line_obj = self.pool.get('account.invoice.line')
-        inv_line_ids = inv_line_obj.search(cr, uid,
-                                           [('invoice_id', 'in', ids)],
-                                           context=context)
-        return inv_line_ids
+    @api.depends('invoice_id.state')
+    def _get_invoice_lines_state(self):
+        for invoice_line in self:
+            invoice_line.state = invoice_line.invoice_id.state
 
-    _columns = {
-        'contract_id': fields.many2one(
-            'recurring.contract', _('Source contract')),
-        'due_date': fields.function(
-            _get_dates, string=_('Due date'), readonly=True, type='date',
-            store={'account.invoice': (_get_invoice_lines, ['date_due'], 20)}),
-        'state': fields.function(
-            _get_states, string=_('State'), readonly=True, type='selection',
-            selection=[('draft', 'Draft'),
-                       ('proforma', 'Pro-forma'),
-                       ('proforma2', 'Pro-forma'),
-                       ('open', 'Open'),
-                       ('paid', 'Paid'),
-                       ('cancel', 'Cancelled')],
-            store={'account.invoice': (_get_invoice_lines, ['state'], 20)}),
-    }
+    @api.depends('due_date')
+    def _get_invoice_lines_date_due(self):
+        for invoice_line in self:
+            invoice_line.due_date = invoice_line.invoice_id.date_due
+
+    contract_id = fields.Many2one(
+        'recurring.contract', _('Source contract'))
+
+    due_date = fields.Date(
+        compute='_get_invoice_lines_date_due', string=_('Due date'),
+        readonly=True, strore=True)
+
+    state = fields.Selection(
+        compute='_get_invoice_lines_state', string=_('State'),
+        readonly=True, strore=True,
+        selection=[('draft', 'Draft'),
+                   ('proforma', 'Pro-forma'),
+                   ('proforma2', 'Pro-forma'),
+                   ('open', 'Open'),
+                   ('paid', 'Paid'),
+                   ('cancel', 'Cancelled')])

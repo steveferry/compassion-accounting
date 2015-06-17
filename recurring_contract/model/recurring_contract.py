@@ -44,8 +44,9 @@ class recurring_contract_line(models.Model):
                     # lambda self, cr, uid, ids, c=None: ids,
                     # ['amount', 'quantity'], 10)
             # }),
-    subtotal = fields.Float(compute='_compute_subtotal')
+    subtotal = fields.Float(compute='_compute_subtotal', store=True)
 
+    @api.depends('amount', 'quantity')
     @api.one
     def _compute_subtotal(self):
         self.subtotal = self.amount * self.quantity
@@ -66,7 +67,7 @@ class recurring_contract(models.Model):
     _inherit = ['mail.thread']
     _rec_name = 'reference'
 
-    @api.one
+    @api.depends('contract_line_ids')
     def _get_total_amount(self):
         self.total_amount = sum([line.subtotal for line in
                                  self.contract_line_ids])
@@ -143,7 +144,7 @@ class recurring_contract(models.Model):
     total_amount = fields.Float(
         compute='_get_total_amount', string='Total',
         digits_compute=dp.get_precision('Account'),
-        track_visibility="onchange")
+        track_visibility="onchange", store=True)
             # 'payment_term_id': fields.related(
             # 'group_id', 'payment_term_id', relation='account.payment.term',
             # type="many2one", readonly=True, string=_('Payment Term'),
@@ -224,12 +225,9 @@ class recurring_contract(models.Model):
 
         return True
 
-    def button_generate_invoices(self, cr, uid, ids, context=None):
-        group_ids = [contract.group_id.id for contract in self.browse(
-            cr, uid, ids, context)]
-        contract_group_obj = self.pool.get('recurring.contract.group')
-        return contract_group_obj.button_generate_invoices(
-            cr, uid, group_ids, context)
+    @api.multi
+    def button_generate_invoices(self):
+        return self.group_id.button_generate_invoices()
 
     @api.one
     def clean_invoices(self, since_date=None, to_date=None, keep_lines=None):
@@ -244,11 +242,9 @@ class recurring_contract(models.Model):
             invl_search.append(('due_date', '>=', since_date))
         if to_date:
             invl_search.append(('due_date', '<=', to_date))
-        inv_line_obj = self.env['account.invoice.line']
 
         # Find all unpaid invoice lines after the given date
-        inv_line_ids = self.invoice_line_ids.filtered(
-            lambda record: record.state not in ('paid', 'cancel'))
+        inv_line_ids = self.invoice_line_ids.search(invl_search)
 
         inv_ids = set()
         empty_inv_ids = set()
@@ -273,7 +269,7 @@ class recurring_contract(models.Model):
         if keep_lines:
             self._move_cancel_lines(to_remove_ids, keep_lines)
         else:
-            to_remove_recset = inv_line_obj.browse(to_remove_ids)
+            to_remove_recset = self.browse(to_remove_ids)
             to_remove_recset.unlink()
 
         # Invoices to set back in open state
@@ -289,13 +285,14 @@ class recurring_contract(models.Model):
                                  keep_lines=None):
         """ Cancels given invoices and validate again given invoices.
             confirm_ids must be a subset of cancel_ids ! """
-        inv_obj = self.pool.get('account.invoice')
+        inv_obj = self.env['account.invoice']
         wf_service = netsvc.LocalService('workflow')
+        invoice_confirm = inv_obj.browse(confirm_ids)
+
         for invoice_id in cancel_ids:
             wf_service.trg_validate(self.env.user.id, 'account.invoice',
                                     invoice_id, 'invoice_cancel', self.env.cr)
-        inv_obj.action_cancel_draft(self.env.cr, self.env.user.id,
-                                    confirm_ids)
+        invoice_confirm.action_cancel_draft()
         for invoice_id in confirm_ids:
             wf_service.trg_validate(self.env.user.id, 'account.invoice',
                                     invoice_id, 'invoice_open', self.env.cr)
