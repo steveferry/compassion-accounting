@@ -48,17 +48,17 @@ class contract_group(models.Model):
              if c.state in self._get_gen_states()] or [False])
         self.next_invoice_date = next_inv_date
 
-    def _get_last_paid_invoice(self, cr, uid, ids, name, args, context=None):
+    def _get_last_paid_invoice(self):
         res = dict()
-        for group in self.browse(cr, uid, ids, context):
+        for group in self:
             res[group.id] = max([c.last_paid_invoice_date
                                  for c in group.contract_ids] or [False])
         return res
 
-    def _get_groups_from_contract(self, cr, uid, ids, context=None):
+    def _get_groups_from_contract(self):
         group_ids = set()
-        contract_obj = self.pool.get('recurring.contract')
-        for contract in contract_obj.browse(cr, uid, ids, context):
+        contract_obj = self.env['recurring.contract']
+        for contract in contract_obj.browse(self.id):
             group_ids.add(contract.group_id.id)
         return list(group_ids)
 
@@ -95,14 +95,14 @@ class contract_group(models.Model):
         string=_('Next invoice date'), store=True)
 
     last_paid_invoice_date = fields.Date(
-        comptute='_get_last_paid_invoice',
+        compute='_get_last_paid_invoice',
         string=_('Last paid invoice date'))
 
     change_method = fields.Selection(
         selection=__get_change_methods, default='do_nothing',
         string=_('Change method'))
 
-    def write(self, cr, uid, ids, vals, context=None):
+    def write(self, vals):
         """
             Perform various check at contract modifications
             - Advance billing increased or decrease
@@ -119,12 +119,11 @@ class contract_group(models.Model):
                           'recurring_value' in vals or
                           'recurring_unit' in vals)
 
-        for group in self.browse(cr, uid, ids, context):
+        for group in self:
 
             # Check if group has an next_invoice_date
             if not group.next_invoice_date:
-                res = super(contract_group, self).write(
-                    cr, uid, group.id, vals, context) and res
+                res = super(contract_group, self).write(vals) and res
                 break
 
             # Get the method to apply changes
@@ -155,28 +154,22 @@ class contract_group(models.Model):
         if invoicer_id.invoice_ids:
             invoicer_id.validate_invoices()
 
-    def clean_invoices(self, cr, uid, group, context=None):
+    def clean_invoices(self):
         """ Change method which cancels generated invoices and rewinds
         the next_invoice_date of contracts, so that new invoices can be
         generated taking into consideration the modifications of the
         contract group.
         """
-
-        recurring_contract_obj = self.pool.get('recurring.contract')
-        contract_ids = [contract.id for contract in group.contract_ids]
-        since_date = datetime.today()
-        if group.last_paid_invoice_date:
+        since_date = datetime.date.today()
+        if self.last_paid_invoice_date:
             last_paid_invoice_date = datetime.strptime(
-                group.last_paid_invoice_date, DF)
+                self.last_paid_invoice_date, DF)
             since_date = max(since_date, last_paid_invoice_date)
-        res = recurring_contract_obj.clean_invoices(
-            cr, uid, contract_ids, context=context,
-            since_date=since_date)
-        recurring_contract_obj.rewind_next_invoice_date(
-            cr, uid, contract_ids, context)
+        res = self.contract_ids.clean_invoices(since_date=since_date)
+        self.contract_ids.rewind_next_invoice_date()
         return res
 
-    def do_nothing(self, cr, uid, group, context=None):
+    def do_nothing(self):
         """ No changes before generation """
         pass
 
@@ -202,7 +195,6 @@ class contract_group(models.Model):
         for contract_group in self:
             logger.info("Generating invoices for group {0}/{1}".format(
                 count, nb_groups))
-
             month_delta = contract_group.advance_billing_months or 1
             limit_date = datetime.today() + relativedelta(months=+month_delta)
             while True:  # Emulate a do-while loop
@@ -217,7 +209,8 @@ class contract_group(models.Model):
                                  c.state in gen_states]
                 if not contr_ids:
                     break
-                inv_data = self._setup_inv_data(journal_ids, invoicer_id)
+                inv_data = contract_group._setup_inv_data(journal_ids,
+                                                          invoicer_id)
                 invoice_id = inv_obj.create(inv_data)
                 for contract in contr_ids:
                     self._generate_invoice_lines(contract, invoice_id)
@@ -239,7 +232,6 @@ class contract_group(models.Model):
             inherit this method.
         """
         partner = self.partner_id
-
         inv_data = {
             'account_id': partner.property_account_receivable.id,
             'type': 'out_invoice',
