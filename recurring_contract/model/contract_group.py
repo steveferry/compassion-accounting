@@ -12,6 +12,7 @@
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
+import openerp
 from openerp import api, fields, models
 from openerp.tools import DEFAULT_SERVER_DATE_FORMAT as DF
 from openerp.tools.translate import _
@@ -111,9 +112,6 @@ class contract_group(models.Model):
         """
         res = True
         # to solve "NotImplementedError: Iteration is not allowed" error
-        if isinstance(ids, (int, long)):
-            ids = [ids]
-
         # Any of these modifications implies generate and validate invoices
         generate_again = ('advance_billing_months' in vals or
                           'recurring_value' in vals or
@@ -130,16 +128,14 @@ class contract_group(models.Model):
             change_method = vals.get('change_method', group.change_method)
             change_method = getattr(self, change_method)
 
-            res = super(contract_group, self).write(
-                cr, uid, group.id, vals, context) & res
+            res = super(contract_group, self).write(vals) & res
 
             if generate_again:
-                change_method(cr, uid, group, context)
+                change_method()
 
         if generate_again:
-            invoicer_id = self.generate_invoices(cr, uid, ids,
-                                                 context=context)
-            self.validate_invoices(cr, uid, invoicer_id, context)
+            invoicer_id = self.generate_invoices()
+            self.validate_invoices(invoicer_id)
 
         return res
 
@@ -177,8 +173,6 @@ class contract_group(models.Model):
         """ Checks all contracts and generate invoices if needed.
         Create an invoice per contract group per date.
         """
-        if context is None:
-            context = dict()
         logger.info("Invoice generation started.")
         inv_obj = self.env['account.invoice']
         journal_obj = self.env['account.journal']
@@ -200,24 +194,24 @@ class contract_group(models.Model):
             while True:  # Emulate a do-while loop
                 # contract_group update 'cause next_inv_date has been modified
                 group_inv_date = contract_group.next_invoice_date
-                contr_ids = []
+                contracts = []
                 if group_inv_date and datetime.strptime(group_inv_date,
                                                         DF) <= limit_date:
-                    contr_ids = [c
+                    contracts = [c
                                  for c in contract_group.contract_ids
                                  if c.next_invoice_date <= group_inv_date and
                                  c.state in gen_states]
-                if not contr_ids:
+                if not contracts:
                     break
                 inv_data = contract_group._setup_inv_data(journal_ids,
                                                           invoicer_id)
-                invoice_id = inv_obj.create(inv_data)
-                for contract in contr_ids:
-                    self._generate_invoice_lines(contract, invoice_id)
-                if invoice_id.invoice_line:
-                    invoice_id.button_compute()
+                invoice = inv_obj.create(inv_data)
+                for contract in contracts:
+                    contract_group._generate_invoice_lines(contract, invoice)
+                if invoice.invoice_line:
+                    invoice.button_compute()
                 else:
-                    invoice_id.unlink()
+                    invoice.unlink()
 
             # After a contract_group is done, we commit all writes in order to
             # avoid doing it again in case of an error or a timeout
@@ -226,7 +220,7 @@ class contract_group(models.Model):
         logger.info("Invoice generation successfully finished.")
         return invoicer_id
 
-    def _setup_inv_data(self, journal_ids, invoicer_id):
+    def _setup_inv_data(self, journal_ids, invoicer):
         """ Setup a dict with data passed to invoice.create.
             If any custom data is wanted in invoice from contract group, just
             inherit this method.
@@ -240,39 +234,38 @@ class contract_group(models.Model):
             'currency_id':
             partner.property_product_pricelist.currency_id.id or False,
             'date_invoice': self.next_invoice_date,
-            'recurring_invoicer_id': invoicer_id.id,
+            'recurring_invoicer_id': invoicer.id,
             'payment_term': self.payment_term_id and
             self.payment_term_id.id or False,
         }
 
         return inv_data
 
-    def _setup_inv_line_data(self, contract_line, invoice_id):
+    def _setup_inv_line_data(self, contract_line, invoice):
         """ Setup a dict with data passed to invoice_line.create.
         If any custom data is wanted in invoice line from contract,
         just inherit this method.
         """
         product = contract_line.product_id
-        account_id = product.property_account_income
+        account = product.property_account_income
         inv_line_data = {
             'name': product.name,
             'price_unit': contract_line.amount or 0.0,
             'quantity': contract_line.quantity,
             'uos_id': False,
             'product_id': product.id or False,
-            'invoice_id': invoice_id.id,
+            'invoice_id': invoice.id,
             'contract_id': contract_line.contract_id.id,
         }
-        if account_id:
-            inv_line_data['account_id'] = account_id.id
+        if account:
+            inv_line_data['account_id'] = account.id
         return inv_line_data
 
     @api.one
-    def _generate_invoice_lines(self, contract, invoice_id):
+    def _generate_invoice_lines(self, contract, invoice):
         inv_line_obj = self.env['account.invoice.line']
         for contract_line in contract.contract_line_ids:
-            inv_line_data = self._setup_inv_line_data(contract_line,
-                                                      invoice_id)
+            inv_line_data = self._setup_inv_line_data(contract_line, invoice)
             if inv_line_data:
                 inv_line_obj.create(inv_line_data)
 

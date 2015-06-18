@@ -37,14 +37,8 @@ class recurring_contract_line(models.Model):
                                  required=True)
     amount = fields.Float(_('Price'), required=True)
     quantity = fields.Integer(_('Quantity'), default=1, required=True)
-    # 'subtotal': fields.function(
-            # _compute_subtotal, string='Subtotal', type="float",
-            # digits_compute=dp.get_precision('Account'), store={
-                # 'recurring.contract.line': (
-                    # lambda self, cr, uid, ids, c=None: ids,
-                    # ['amount', 'quantity'], 10)
-            # }),
-    subtotal = fields.Float(compute='_compute_subtotal', store=True)
+    subtotal = fields.Float(compute='_compute_subtotal', store=True,
+                            digits_compute=dp.get_precision('Account'))
 
     @api.depends('amount', 'quantity')
     @api.one
@@ -67,7 +61,8 @@ class recurring_contract(models.Model):
     _inherit = ['mail.thread']
     _rec_name = 'reference'
 
-    @api.depends('contract_line_ids')
+    @api.depends('contract_line_ids', 'contract_line_ids.amount',
+                 'contract_line_ids.quantity')
     def _get_total_amount(self):
         self.total_amount = sum([line.subtotal for line in
                                  self.contract_line_ids])
@@ -132,29 +127,13 @@ class recurring_contract(models.Model):
                "confirmed and until it's terminated.\n"
                "* The 'Terminated' status is used when a contract is no "
                "longer active."))
-    # 'total_amount': fields.function(
-            # _get_total_amount, string='Total',
-            # digits_compute=dp.get_precision('Account'),
-            # store={
-                # 'recurring.contract': (lambda self, cr, uid, ids, c=dict():
-                                       # ids, ['contract_line_ids'], 40),
-                # 'recurring.contract.line': (_get_contract_from_line,
-                                            # ['amount', 'quantity'], 30),
-            # }, track_visibility="onchange"),
     total_amount = fields.Float(
         compute='_get_total_amount', string='Total',
         digits_compute=dp.get_precision('Account'),
         track_visibility="onchange", store=True)
-            # 'payment_term_id': fields.related(
-            # 'group_id', 'payment_term_id', relation='account.payment.term',
-            # type="many2one", readonly=True, string=_('Payment Term'),
-            # store={
-                # 'recurring.contract.group': (
-                    # _get_contract_from_group,
-                    # ['payment_term_id'], 10)}),
-    payment_term_id = fields.Many2one(
-        'account.payment.term', readonly=True, string=_('Payment Term'),
-        store=True)
+    payment_term_id = fields.Many2one(relation='account.payment.term',
+        related='group_id.payment_term_id', readonly=True,
+        string=_('Payment Term'), store=True)
 
     @api.constrains('reference')
     @api.one
@@ -179,16 +158,12 @@ class recurring_contract(models.Model):
 
         return super(recurring_contract, self).create(vals)
 
-    @api.one
     def write(self, vals):
         """ Perform various checks when a contract is modified. """
         if 'next_invoice_date' in vals:
             self._on_change_next_invoice_date(vals['next_invoice_date'])
 
         res = super(recurring_contract, self).write(vals)
-
-        res = super(recurring_contract, self).write(
-            cr, uid, ids, vals, context=context)
 
         if 'contract_line_ids' in vals:
             self._on_contract_lines_changed()
@@ -199,7 +174,7 @@ class recurring_contract(models.Model):
     def copy(self, default=None):
         default = default or dict()
         today = datetime.today()
-        old_contract = self.browse(cr, uid, id, context)
+        old_contract = self
         next_invoice_date = datetime.strptime(old_contract.next_invoice_date,
                                               DF)
         next_invoice_date = next_invoice_date.replace(month=today.month)
@@ -244,12 +219,12 @@ class recurring_contract(models.Model):
             invl_search.append(('due_date', '<=', to_date))
 
         # Find all unpaid invoice lines after the given date
-        inv_line_ids = self.invoice_line_ids.search(invl_search)
+        inv_lines = self.invoice_line_ids.search(invl_search)
 
         inv_ids = set()
         empty_inv_ids = set()
         to_remove_ids = []   # Invoice lines that will be moved or removed
-        for inv_line in inv_line_ids:
+        for inv_line in inv_lines:
             invoice = inv_line.invoice_id
             inv_ids.add(invoice.id)
             # Check if invoice is empty after removing the invoice_lines
@@ -322,9 +297,9 @@ class recurring_contract(models.Model):
                         if line.state == 'cancel'])
                     if next_invoice_date:
                         super(recurring_contract, self).write(
-                            cr, uid, [contract.id], {
+                            [contract.id], {
                                 'next_invoice_date':
-                                next_invoice_date.strftime(DF)}, context)
+                                next_invoice_date.strftime(DF)})
 
         return True
 
@@ -388,6 +363,7 @@ class recurring_contract(models.Model):
                     'Error', _('You cannot rewind the next invoice date.'))
         return True
 
+    @api.one
     def _on_contract_lines_changed(self):
         """Update related invoices to reflect the changes to the contract.
         """

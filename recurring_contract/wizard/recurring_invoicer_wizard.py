@@ -29,10 +29,10 @@ class recurring_invoicer_wizard(models.TransientModel):
     def generate(self, *args, **kwargs):
         recurring_invoicer_obj = self.env['recurring.invoicer']
         contract_groups = self.env['recurring.contract.group'].search([])
-        invoicer_id = recurring_invoicer_obj.create({'source': self._name})
+        invoicer = recurring_invoicer_obj.create({'source': self._name})
 
-        contract_groups.generate_invoices(invoicer_id)
-        if not invoicer_id.invoice_ids:
+        contract_groups.generate_invoices(invoicer)
+        if not invoicer.invoice_ids:
             raise exceptions.Warning('ZeroGenerationError',
                                      _('0 invoices have been generated.'))
 
@@ -40,7 +40,7 @@ class recurring_invoicer_wizard(models.TransientModel):
             'name': 'recurring.invoicer.form',
             'view_mode': 'form',
             'view_type': 'form,tree',
-            'res_id': invoicer_id.id,  # id of the object to which to redirect
+            'res_id': invoicer.id,  # id of the object to which to redirect
             'res_model': 'recurring.invoicer',  # object name
             'type': 'ir.actions.act_window',
         }
